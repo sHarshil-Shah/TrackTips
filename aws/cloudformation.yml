@@ -1,0 +1,698 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Parameters:
+  LabRoleARNParameter:
+    Type: String
+    Default: arn:aws:iam::665078887436:role/LabRole
+  SecretManagerNameParameter:
+    Type: String
+    Default: fyers_api_details-1
+  S3CodeBucketNameParameter:
+    Type: String
+    Default: code-bucket-1299
+  S3DependancyBucketNameParameter:
+    Type: String
+    Default: fyers-python-dependancy-bucket
+  S3MiscBucketNameParameter:
+    Type: String
+    Default: misc-1299
+
+# Ref: https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-function.html
+Resources:
+  # {
+  #   "user_email": "sharshil1299@gmail.com",
+  #   "access_token": "access_token"
+  # }
+  LoginActivityStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      DefinitionS3Location:
+        Bucket: !Sub ${S3MiscBucketNameParameter}
+        Key: LoginActivityStateMachinePolicy.json
+      RoleArn: !Sub ${LabRoleARNParameter}
+      StateMachineName: LoginActivityStateMachine
+    DependsOn:
+      - UserCreationLambda
+
+##### Create Layers
+  FyersPythonDependencyLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      Content:
+        S3Bucket: !Sub ${S3DependancyBucketNameParameter}
+        S3Key: fyers-api.zip
+      Description: Fyers Python Dependency Layer
+      CompatibleRuntimes:
+        - python3.8
+
+  PyJWTLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      Content:
+        S3Bucket: !Sub ${S3DependancyBucketNameParameter}
+        S3Key: PyJWT-layer.zip
+      CompatibleRuntimes:
+        - python3.8
+
+  RequestsLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      Content:
+        S3Bucket: !Sub ${S3DependancyBucketNameParameter}
+        S3Key: requests-layer.zip
+      Description: Requests Python library Layer
+      CompatibleRuntimes:
+        - python3.8
+
+  ############################ Endpoints which uses Fyers API
+  ######### Endpoint 1 - GET /getAuthCode
+  FyersRestAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: FyersRestAPI
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  GetAuthCodeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref FyersRestAPI
+      ParentId: !GetAtt [ FyersRestAPI, RootResourceId ]
+      PathPart: "getAuthCode"
+    DependsOn:
+      - FyersRestAPI
+
+  GetAuthCodeMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FyersRestAPI
+      ResourceId: !Ref GetAuthCodeResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthCodeLambda.Arn}/invocations'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: "500"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+    DependsOn:
+      - AuthCodeLambda
+      - FyersRestAPI
+      - GetAuthCodeResource
+
+  AuthCodeDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref FyersRestAPI
+      StageName: prod
+    # Ref: https://stackoverflow.com/a/56952338
+    DependsOn:
+      - FyersRestAPI
+      - GetAuthCodeMethod
+      - updateMyTrackListMethod
+      - GetAccessCodeMethod
+      - TrackRequestMethod
+
+  AuthCodeLambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !Ref AuthCodeLambda
+      Action: 'lambda:InvokeFunction'
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FyersRestAPI}/*/GET/getAuthCode'
+    DependsOn:
+      - AuthCodeLambda
+      - FyersRestAPI
+      - GetAuthCodeResource
+
+  AuthCodeLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Architectures:
+        - arm64
+      Layers:
+        - !Ref FyersPythonDependencyLayer
+      FunctionName: fyersAuthCodeGenerate1
+      Runtime: python3.8
+      Role: !Sub ${LabRoleARNParameter}
+      Code:
+        S3Key: 1get_auth_code.zip
+        S3Bucket: !Sub ${S3CodeBucketNameParameter}
+      Handler: 1get_auth_code.lambda_handler
+      Environment:
+        Variables:
+          redirect_uri: !Sub 'https://${FyersRestAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/getAccessCode'
+          secret_name: !Sub ${SecretManagerNameParameter}
+    DependsOn:
+      - FyersPythonDependencyLayer
+      - GetAccessCodeMethod
+
+  ################## Endpoint 2 - GET /getAccessCode
+  AccessCodeLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Architectures:
+        - arm64
+      Layers:
+        - !Ref FyersPythonDependencyLayer
+        - !Ref PyJWTLayer
+      FunctionName: fyersAccessTokenGenerate1
+      Runtime: python3.8
+      Role: !Sub ${LabRoleARNParameter}
+      Code:
+        S3Key: 2get_logged_in_username.zip
+        S3Bucket: !Sub ${S3CodeBucketNameParameter}
+      Handler: 2get_logged_in_username.lambda_handler
+      Environment:
+        Variables:
+          redirect_uri: !Sub 'https://${FyersRestAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/getAccessCode'
+          secret_name: !Sub ${SecretManagerNameParameter}
+          state_machine_arn: !Sub ${LoginActivityStateMachine.Arn}
+          userCreationARN: !GetAtt UserCreationLambda.Arn
+          encryptionUsingKMSARN: !GetAtt EncryptionUsingKMSLambda.Arn
+    DependsOn:
+      - FyersPythonDependencyLayer
+      - LoginActivityStateMachine
+      - UserCreationLambda
+      - EncryptionUsingKMSLambda
+
+  GetAccessCodeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref FyersRestAPI
+      ParentId: !GetAtt [ FyersRestAPI, RootResourceId ]
+      PathPart: "getAccessCode"
+    DependsOn:
+      - FyersRestAPI
+
+  GetAccessCodeMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FyersRestAPI
+      ResourceId: !Ref GetAccessCodeResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AccessCodeLambda.Arn}/invocations'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: "500"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+    DependsOn:
+      - AccessCodeLambda
+      - FyersRestAPI
+      - GetAccessCodeResource
+
+  AccessCodeLambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !Ref AccessCodeLambda
+      Action: 'lambda:InvokeFunction'
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FyersRestAPI}/*/GET/getAccessCode'
+    DependsOn:
+      - AccessCodeLambda
+      - FyersRestAPI
+      - GetAccessCodeResource
+
+  ################## Endpoint 3 - POST /track-request
+  TrackRequestLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Architectures:
+        - arm64
+      Layers:
+        - !Ref FyersPythonDependencyLayer
+      Timeout: 30
+      FunctionName: fyersTrackRequest1
+      Runtime: python3.8
+      Role: !Sub ${LabRoleARNParameter}
+      Code:
+        S3Key: 5_track_request_to_dynamo_db.zip
+        S3Bucket: !Sub ${S3CodeBucketNameParameter}
+      Handler: 5_track_request_to_dynamo_db.lambda_handler
+      Environment:
+        Variables:
+          NSE_FILE_URL: 'https://public.fyers.in/sym_details/NSE_CM.csv'
+          track_list_dynamodb_table_name: !Ref TrackListDynamoDBTable
+    DependsOn:
+      - FyersPythonDependencyLayer
+      - TrackListDynamoDBTable
+
+  TrackRequestResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref FyersRestAPI
+      ParentId: !GetAtt [ FyersRestAPI, RootResourceId ]
+      PathPart: "track-request"
+    DependsOn:
+      - FyersRestAPI
+
+  TrackRequestMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FyersRestAPI
+      ResourceId: !Ref TrackRequestResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        TimeoutInMillis: 29000
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TrackRequestLambda.Arn}/invocations'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: "500"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+    DependsOn:
+      - TrackRequestLambda
+      - FyersRestAPI
+      - GetAccessCodeResource
+
+  TrackRequestLambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !Ref TrackRequestLambda
+      Action: 'lambda:InvokeFunction'
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FyersRestAPI}/*/POST/track-request'
+    DependsOn:
+      - TrackRequestLambda
+      - FyersRestAPI
+      - GetAccessCodeResource
+
+  ######## User Creation Endpoint
+  MyKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: "My KMS key"
+      Enabled: true
+      KeyUsage: ENCRYPT_DECRYPT
+      Tags:
+        - Key: "Environment"
+          Value: "Production"
+      KeyPolicy: 
+        Id: key-consolepolicy-3
+        Version: '2012-10-17'
+        Statement:
+        - Sid: Enable IAM User Permissions
+          Effect: Allow
+          Principal:
+            AWS: arn:aws:iam::665078887436:root
+          Action: kms:*
+          Resource: "*"
+        - Sid: Allow access for Key Administrators
+          Effect: Allow
+          Principal:
+            AWS: arn:aws:iam::665078887436:role/LabRole
+          Action:
+          - kms:Create*
+          - kms:Describe*
+          - kms:Enable*
+          - kms:List*
+          - kms:Put*
+          - kms:Update*
+          - kms:Revoke*
+          - kms:Disable*
+          - kms:Get*
+          - kms:Delete*
+          - kms:TagResource
+          - kms:UntagResource
+          Resource: "*"
+        - Sid: Allow use of the key
+          Effect: Allow
+          Principal:
+            AWS: arn:aws:iam::665078887436:role/LabRole
+          Action:
+          - kms:Encrypt
+          - kms:Decrypt
+          - kms:ReEncrypt*
+          - kms:GenerateDataKey*
+          - kms:DescribeKey
+          Resource: "*"
+        - Sid: Allow attachment of persistent resources
+          Effect: Allow
+          Principal:
+            AWS: arn:aws:iam::665078887436:role/LabRole
+          Action:
+          - kms:CreateGrant
+          - kms:ListGrants
+          - kms:RevokeGrant
+          Resource: "*"
+          Condition:
+            Bool:
+              kms:GrantIsForAWSResource: 'true'
+
+
+  EncryptionUsingKMSLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Architectures:
+        - arm64
+      FunctionName: encryptionUsingKMS
+      Runtime: python3.8
+      Role: !Sub ${LabRoleARNParameter}
+      Code:
+        S3Key: kms/encrypt.zip
+        S3Bucket: !Sub ${S3CodeBucketNameParameter}
+      Handler: encrypt.lambda_handler
+      Environment:
+        Variables:
+          KEY_ID: !Ref MyKMSKey
+
+  EncryptionUsingKMSLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref EncryptionUsingKMSLambda
+      Action: lambda:InvokeFunction
+      Principal: !Sub ${LabRoleARNParameter}
+    DependsOn:
+      - EncryptionUsingKMSLambda
+
+  DecryptionUsingKMSLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Architectures:
+        - arm64
+      FunctionName: decryptionUsingKMS
+      Runtime: python3.8
+      Role: !Sub ${LabRoleARNParameter}
+      Code:
+        S3Key: kms/decrypt.zip
+        S3Bucket: !Sub ${S3CodeBucketNameParameter}
+      Handler: decrypt.lambda_handler
+      Environment:
+        Variables:
+          KEY_ID: !Ref MyKMSKey
+
+  DecryptionUsingKMSLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref DecryptionUsingKMSLambda
+      Action: lambda:InvokeFunction
+      Principal: !Sub ${LabRoleARNParameter}
+    DependsOn:
+      - DecryptionUsingKMSLambda
+
+  UsersDynamoDBTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: 'user_id'
+          AttributeType: 'S'
+      KeySchema:
+        - AttributeName: 'user_id'
+          KeyType: 'HASH'
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      TableName: 'users'
+
+  UserCreationLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Architectures:
+        - arm64
+      FunctionName: userCreation
+      Runtime: python3.8
+      Role: !Sub ${LabRoleARNParameter}
+      Code:
+        S3Key: user/create_user.zip
+        S3Bucket: !Sub ${S3CodeBucketNameParameter}
+      Timeout: 30
+      Handler: create_user.lambda_handler
+      Environment:
+        Variables:
+          encryption_lambda_ARN: !GetAtt EncryptionUsingKMSLambda.Arn
+          user_dynamodb_table_name: !Ref UsersDynamoDBTable
+    DependsOn:
+      - EncryptionUsingKMSLambda
+      - UsersDynamoDBTable
+
+  UserCreationRestAPI:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: UserCreationRestAPI
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  UserCreationResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref UserCreationRestAPI
+      ParentId: !GetAtt [ UserCreationRestAPI, RootResourceId ]
+      PathPart: "createUser"
+    DependsOn:
+      - UserCreationRestAPI
+
+  UserCreationMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref UserCreationRestAPI
+      ResourceId: !Ref UserCreationResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${UserCreationLambda.Arn}/invocations'
+        TimeoutInMillis: 29000
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: "500"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+    DependsOn:
+      - UserCreationLambda
+      - UserCreationRestAPI
+      - UserCreationResource
+
+  UserCreationCodeDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      RestApiId: !Ref UserCreationRestAPI
+      StageName: Prod
+    # Ref: https://stackoverflow.com/a/56952338
+    DependsOn:
+      - UserCreationRestAPI
+      - UserCreationMethod
+
+  UserCreationLambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !Ref UserCreationLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      # SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${UserCreationRestAPI}/*/Post/createUser'
+    DependsOn:
+      - UserCreationLambda
+      - UserCreationRestAPI
+      - UserCreationResource
+
+  ######## Add fyers API key details in secret manager
+  FyersAPISecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${SecretManagerNameParameter}
+      SecretString: >
+        {
+          "client_id": "MDYK739UGV-100",
+          "secret_key": "MA5LOPYB03"
+        }
+  
+  FyersAPISecretPolicy:
+    Type: AWS::SecretsManager::ResourcePolicy
+    Properties:
+      SecretId: !Ref FyersAPISecret
+      ResourcePolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "GrantAccessToLambda"
+            Effect: "Allow"
+            Principal:
+              Service: "lambda.amazonaws.com"
+            Action:
+              - "secretsmanager:GetSecretValue"
+            Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${SecretManagerNameParameter}-*"
+
+  ##### Track request to dynamodb table store
+  TrackListDynamoDBTable:
+    Type: 'AWS::DynamoDB::Table'
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: 'track_id'
+          AttributeType: 'S'
+        - AttributeName: 'user_id'
+          AttributeType: 'S'
+      KeySchema:
+        - AttributeName: 'track_id'
+          KeyType: 'HASH'
+        - AttributeName: 'user_id'
+          KeyType: 'RANGE'
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      TableName: 'track_list'
+
+#########  Endpoint 4: POST /updateMyTrackList - Update Track_list table
+  CheckTargetFyersLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Timeout: 40
+      Architectures:
+        - arm64
+      FunctionName: CheckTargetFyers
+      Runtime: python3.8
+      Role: !Sub ${LabRoleARNParameter}
+      Layers:
+        - !Ref PyJWTLayer
+      Code:
+        S3Key: 3_update_target_list_table.zip
+        S3Bucket: !Sub ${S3CodeBucketNameParameter}
+      Handler: 3_update_target_list_table.lambda_handler
+      Environment:
+        Variables:
+          check_target_lambda_ARN: !GetAtt UpdateTargetTrackListDynamoTableLambda.Arn
+          track_list_dynamodb_table_name: !Ref TrackListDynamoDBTable
+          secret_name: !Sub ${SecretManagerNameParameter}
+          GetDecryptedAccessCodeLambda_ARN: !GetAtt GetDecryptedAccessCodeLambda.Arn
+
+    DependsOn:
+      - UpdateTargetTrackListDynamoTableLambda
+      - TrackListDynamoDBTable
+
+  UpdateTargetTrackListDynamoTableLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Timeout: 40
+      Layers:
+        - !Ref FyersPythonDependencyLayer
+      Architectures:
+        - arm64
+      FunctionName: UpdateTargetTrackListDynamoTable
+      Runtime: python3.8
+      Role: !Sub ${LabRoleARNParameter}
+      Code:
+        S3Key: 4_check_target_hit_fyers.zip
+        S3Bucket: !Sub ${S3CodeBucketNameParameter}
+      Handler: 4_check_target_hit_fyers.lambda_handler
+      Environment:
+        Variables:
+          GetDecryptedAccessCodeLambda_ARN: !GetAtt GetDecryptedAccessCodeLambda.Arn
+    DependsOn:
+      - FyersPythonDependencyLayer
+      - TrackListDynamoDBTable
+
+  CheckTargetFyersResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref FyersRestAPI
+      ParentId: !GetAtt [ FyersRestAPI, RootResourceId ]
+      PathPart: "updateMyTrackList"
+    DependsOn:
+      - FyersRestAPI
+
+  updateMyTrackListMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref FyersRestAPI
+      ResourceId: !Ref CheckTargetFyersResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        TimeoutInMillis: 29000
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CheckTargetFyersLambda.Arn}/invocations'
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+        - StatusCode: "500"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Origin: true
+    DependsOn:
+      - CheckTargetFyersLambda
+      - FyersRestAPI
+      - CheckTargetFyersResource
+
+  CheckTargetFyersPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !Ref CheckTargetFyersLambda
+      Action: 'lambda:InvokeFunction'
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FyersRestAPI}/*/POST/updateMyTrackList'
+    DependsOn:
+      - CheckTargetFyersLambda
+      - FyersRestAPI
+      - CheckTargetFyersResource
+
+###################### Get Decrypted access_code
+  GetDecryptedAccessCodeLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      Timeout: 40
+      Architectures:
+        - arm64
+      FunctionName: getDecryptedAccessCode1
+      Runtime: python3.8
+      Role: !Sub ${LabRoleARNParameter}
+      Code:
+        S3Key: get_access_token_by_username.zip
+        S3Bucket: !Sub ${S3CodeBucketNameParameter}
+      Handler: get_access_token_by_username.lambda_handler
+      Environment:
+        Variables:
+          users_table_name: !Ref UsersDynamoDBTable
+          DecryptionUsingKMSLambda_ARN: !GetAtt DecryptionUsingKMSLambda.Arn
+    DependsOn:
+      - UsersDynamoDBTable
+      - DecryptionUsingKMSLambda
+  
+  GetDecryptedAccessCodeLambdaPermission:
+    Type: 'AWS::Lambda::Permission'
+    Properties:
+      FunctionName: !Ref GetDecryptedAccessCodeLambda
+      Action: 'lambda:InvokeFunction'
+      Principal: lambda.amazonaws.com
+      # SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${FyersRestAPI}/*/GET/getAccessCode'
+    DependsOn:
+      - GetDecryptedAccessCodeLambda

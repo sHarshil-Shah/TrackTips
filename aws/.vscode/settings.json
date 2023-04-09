@@ -1,0 +1,6 @@
+{
+    "yaml.schemas": {
+        "https://raw.githubusercontent.com/awslabs/goformation/master/schema/cloudformation.schema.json": "file:///d%3A/OneDrive%20-%20Dalhousie%20University/Term%202/5409/Proj/aws/cloudformation.yml"
+    },
+    "python.analysis.typeCheckingMode": "basic"
+}

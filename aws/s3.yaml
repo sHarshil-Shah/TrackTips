@@ -1,0 +1,21 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  FyersPythonDependancyBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: fyers-python-dependancy-bucket
+      AccessControl: Private
+  
+  CodeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: code-bucket-1299
+      AccessControl: Private
+  
+  MiscBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: misc-1299
+      AccessControl: Private
+
+  
