@@ -1,0 +1,136 @@
+{
+	"info": {
+		"_postman_id": "a03e528b-f321-45fd-8c0b-ad0d710b87fb",
+		"name": "cloud project",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "6263952"
+	},
+	"item": [
+		{
+			"name": "1 auth code",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{server_link}}/getAuthCode",
+					"host": [
+						"{{server_link}}"
+					],
+					"path": [
+						"getAuthCode"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "add to track list",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"user_id\": \"XH03790\",\r\n    \"symbol\": \"NSE:ANURAS-EQ\",\r\n    \"target_date\": \"2023-04-11\",\r\n    \"target_price\": 830\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{server_link}}/track-request",
+					"host": [
+						"{{server_link}}"
+					],
+					"path": [
+						"track-request"
+					]
+				}
+			},
+			"response": [
+				{
+					"name": "add to track list",
+					"originalRequest": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"user_id\": \"XH03790\",\r\n    \"symbol\": \"NSE:ADANITRANS-EQ\",\r\n    \"target_date\": \"2023-04-11\",\r\n    \"target_price\": 953\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{server_link}}/track-request",
+							"host": [
+								"{{server_link}}"
+							],
+							"path": [
+								"track-request"
+							]
+						}
+					},
+					"_postman_previewlanguage": null,
+					"header": null,
+					"cookie": [],
+					"body": null
+				}
+			]
+		},
+		{
+			"name": "updateMyList",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\r\n    \"user_id\": \"XH03790\"\r\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{server_link}}/updateMyTrackList",
+					"host": [
+						"{{server_link}}"
+					],
+					"path": [
+						"updateMyTrackList"
+					]
+				}
+			},
+			"response": []
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "server_link",
+			"value": "",
+			"type": "string"
+		}
+	]
+}
